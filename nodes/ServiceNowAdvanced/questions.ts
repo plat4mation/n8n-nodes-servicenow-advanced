@@ -125,8 +125,8 @@ function questionFromRow(
 
 /**
  * Fields of one question, in the order a person fills them in. Kept as a
- * separate list on purpose: the alphabetical-order lint autofix for inline
- * fixedCollection values re-sorted these and dropped their displayOptions.
+ * named list: the lint autofix for inline fixedCollection values sorts them
+ * alphabetically and drops their displayOptions.
  * Each limit only shows for the question types the HITL API accepts it on.
  */
 export const questionFields: INodeProperties[] = [

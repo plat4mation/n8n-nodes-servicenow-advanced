@@ -47,7 +47,13 @@ Creates a human-in-the-loop (HITL) request in ServiceNow through the `x_pl4_hitl
 
 - **Request an approval**: a group approves or rejects.
 - **Ask a question**: a group answers questions. Build them with fields (ID, label, type, mandatory, help text, and only the limits that fit the type) or paste them as JSON.
-- **Report an error**: a group fixes a problem on a related record. Needs the error message and the related record (table plus number or sys_id). Send and forget only: ServiceNow never pushes error decisions back.
+- **Report an error**: a group fixes a problem on a related record. Needs the error message and the related record (table plus number or sys_id). ServiceNow doesn't push error outcomes back; read them with **Get Decision**.
+
+For a request that already exists (by its `correlation_id`):
+
+- **Get Decision**: the current outcome: `open`, `approved`, `rejected`, `answered`, `declined`, `resolved`, `abandoned`, `expired` or `cancelled`. Output keys: `correlation_id`, `outcome`, `approved` (approvals, else `null`), `answers` (answered questions, else `null`), `comments`, `resolved_by`, `resolved_at`, `related_record`.
+- **Cancel Request**: withdraw an open request, with an optional reason. Cancelling again returns `already_cancelled: true`; a request that is already decided gives an error.
+- **Add Work Note**: add a note for the reviewers to the open review. Work notes are never sent back with the decision.
 
 Shared fields: subject and the context shown to the reviewer (fields or JSON). Under **Options**:
 - **Assignment Group**: pick from the list or type a name or sys_id.
@@ -87,7 +93,7 @@ While waiting, the node has one output per outcome, so you can branch without an
 
 *Expired / Other* receives expired requests, waits that timed out in n8n (also how a cancelled request ends) and retries of a request that was already settled. Without waiting, as an AI tool and as the Human review gate, the node has a single output.
 
-`outcome` is `approved`, `rejected`, `answered`, `declined` or `expired`. Request an approval adds `approved`; Ask a question adds `answers` (the answers keyed by question ID) instead. When the request has an expiry, n8n stops waiting 15 minutes after it; without one it stops after **Stop Waiting After (Hours)** (default 168). Either way the output has the same keys with `outcome: "timed_out"`. ServiceNow never pushes cancelled requests, so a cancellation also ends as `timed_out`. A callback that isn't a `hitl_decision` gets a 400 and the workflow keeps waiting. Only the first input item is processed while waiting. The callback is protected by the secret token in the resume URL.
+`outcome` is `approved`, `rejected`, `answered`, `declined` or `expired`. Request an approval adds `approved`; Ask a question adds `answers` (the answers keyed by question ID) instead. When the request has an expiry, n8n stops waiting 15 minutes after it; without one it stops after **Stop Waiting After (Hours)** (default 168). Either way the output has the same keys with `outcome: "timed_out"`. ServiceNow doesn't push cancelled requests, so a cancellation also ends as `timed_out`; **Get Decision** returns `cancelled`. A callback that isn't a `hitl_decision` gets a 400 and the workflow keeps waiting. Only the first input item is processed while waiting. The callback is protected by the secret token in the resume URL.
 
 Without waiting, every input item creates one request and the output holds its `correlation_id`.
 

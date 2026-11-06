@@ -154,8 +154,7 @@ const SYS_ID = /^[0-9a-f]{32}$/;
 /**
  * The related record as `{ table, sys_id }` or `{ table, number }`. The record
  * picker gives `{ mode, value }`: list and "By Sys ID" hold a sys_id, "By
- * Number" a number. Workflows saved before the picker hold a plain string plus
- * the old `relatedLookup` setting.
+ * Number" a number.
  */
 function relatedRecordFor(
 	ctx: IExecuteFunctions,
@@ -178,14 +177,7 @@ function relatedRecordFor(
 			{ itemIndex },
 		);
 	}
-	let bySysId: boolean;
-	if (isLocator) {
-		bySysId = raw.mode !== 'number' && SYS_ID.test(value);
-	} else {
-		const params = ctx.getNode().parameters as IDataObject;
-		const legacy = (prefix ? (params.options as IDataObject | undefined) : params)?.relatedLookup;
-		bySysId = legacy === 'sysId';
-	}
+	const bySysId = (!isLocator || raw.mode !== 'number') && SYS_ID.test(value);
 	return bySysId ? { table, sys_id: value } : { table, number: value };
 }
 
@@ -408,8 +400,7 @@ export async function executeHitl(
 			((credentials.n8nBaseUrl as string | undefined) ?? '').trim().replace(/\/+$/, '') ||
 			urlOrigin(resumeUrl);
 
-		// Only base_url and path: the n8n dispatcher rejects any other endpoint
-		// field ("authentication: Unknown field"), despite the HITL spec listing it.
+		// The n8n dispatcher accepts only base_url and path as endpoint fields.
 		const endpoint: IDataObject = { base_url: baseUrl, path: urlPath(resumeUrl) };
 
 		const body = await buildEnvelope(ctx, reviewType, 0, specificFor(0), {
@@ -543,4 +534,115 @@ export async function hitlWebhook(this: IWebhookFunctions): Promise<IWebhookResp
 			!humanReview,
 		),
 	};
+}
+
+/** Operations on an existing request, addressed by its correlation_id. */
+export const FOLLOW_UP_OPERATIONS = ['getDecision', 'cancelRequest', 'addWorkNote'];
+
+const CORRELATION_ID = /^[0-9a-f]{32}$/;
+
+/**
+ * Get Decision output: the polled hitl_decision with the same keys for every
+ * outcome. The decision API answers 204 without a body while the request is
+ * open, so that becomes `outcome: "open"`.
+ */
+function polledDecision(correlationId: string, decision: IDataObject | undefined): IDataObject {
+	const outcome = (decision?.outcome as string | undefined) ?? 'open';
+	return {
+		correlation_id: decision?.correlation_id ?? correlationId,
+		outcome,
+		approved: outcome === 'approved' || outcome === 'rejected' ? outcome === 'approved' : null,
+		answers: outcome === 'answered' ? ((decision?.data as IDataObject | null) ?? null) : null,
+		comments: decision?.comments ?? null,
+		resolved_by: decision?.resolved_by ?? null,
+		resolved_at: decision?.resolved_at ?? null,
+		related_record: decision?.related_record ?? null,
+	};
+}
+
+async function followUp(
+	ctx: IExecuteFunctions,
+	operation: string,
+	itemIndex: number,
+): Promise<IDataObject> {
+	const correlationId = textParameter(ctx, 'correlationId', itemIndex).toLowerCase();
+	if (!CORRELATION_ID.test(correlationId)) {
+		throw new NodeOperationError(
+			ctx.getNode(),
+			`Correlation ID must be the 32-character id returned when the request was created (got "${correlationId}")`,
+			{ itemIndex },
+		);
+	}
+	const request = {
+		getDecision: {
+			method: 'GET' as const,
+			path: `${HITL_API}/decision/${correlationId}`,
+			what: 'read the decision',
+		},
+		cancelRequest: {
+			method: 'POST' as const,
+			path: `${HITL_API}/request/${correlationId}/cancel`,
+			what: 'cancel the request',
+		},
+		addWorkNote: {
+			method: 'POST' as const,
+			path: `${HITL_API}/review/${correlationId}/work_notes`,
+			what: 'add the work note',
+		},
+	}[operation as 'getDecision' | 'cancelRequest' | 'addWorkNote'];
+
+	let body: IDataObject | undefined;
+	if (operation === 'cancelRequest') {
+		const reason = textParameter(ctx, 'cancelReason', itemIndex);
+		body = reason ? { reason: reason.slice(0, 1000) } : {};
+	}
+	if (operation === 'addWorkNote') {
+		const note = textParameter(ctx, 'workNote', itemIndex);
+		if (!note) throw new NodeOperationError(ctx.getNode(), 'Work Note is required', { itemIndex });
+		if (note.length > 4000) {
+			throw new NodeOperationError(ctx.getNode(), 'Work Note is longer than 4000 characters', {
+				itemIndex,
+			});
+		}
+		body = { work_notes: note };
+	}
+
+	let response: IDataObject | string | undefined;
+	try {
+		response = await serviceNowApiRequest.call(ctx, request.method, request.path, body);
+	} catch (error) {
+		const status = statusOf(error);
+		throw new NodeApiError(ctx.getNode(), error as JsonObject, {
+			message: `Could not ${request.what}${status ? ` (HTTP ${status})` : ''}`,
+			description: describeFailedRequest(ctx, request.method, request.path, body, error),
+			itemIndex,
+		});
+	}
+	const result =
+		typeof response === 'object' && response
+			? (response.result as IDataObject | undefined)
+			: undefined;
+	if (operation === 'getDecision') return polledDecision(correlationId, result);
+	return result ?? { correlation_id: correlationId };
+}
+
+/** execute() for Get Decision, Cancel Request and Add Work Note. */
+export async function executeFollowUp(
+	ctx: IExecuteFunctions,
+	operation: string,
+): Promise<INodeExecutionData[][]> {
+	const out: INodeExecutionData[] = [];
+	const items = ctx.getInputData();
+	for (let i = 0; i < items.length; i++) {
+		if (!ctx.continueOnFail()) {
+			out.push({ json: await followUp(ctx, operation, i), pairedItem: { item: i } });
+			continue;
+		}
+		try {
+			out.push({ json: await followUp(ctx, operation, i), pairedItem: { item: i } });
+		} catch (error) {
+			out.push({ json: { error: (error as Error).message }, pairedItem: { item: i } });
+		}
+	}
+	return [out];
 }

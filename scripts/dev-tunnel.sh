@@ -54,15 +54,6 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 # 1. Ensure the node is symlinked into n8n's custom folder.
-# Remove a link left by an earlier, unscoped package name: n8n would load the
-# nodes twice. Only links pointing at this repo are touched.
-OLD_NAME="${PKG_NAME#*/}"
-if [ "$OLD_NAME" != "$PKG_NAME" ] && [ -L "$CUSTOM_DIR/$OLD_NAME" ] \
-	&& [ "$(readlink "$CUSTOM_DIR/$OLD_NAME")" = "$REPO_DIR" ]; then
-	rm "$CUSTOM_DIR/$OLD_NAME"
-	echo "Removed old link $CUSTOM_DIR/$OLD_NAME"
-fi
-
 # dirname handles scoped names (@scope/name).
 mkdir -p "$(dirname "$LINK_PATH")"
 if [ ! -e "$LINK_PATH" ]; then
@@ -135,26 +126,15 @@ echo "Editor: http://localhost:$PORT"
 # n8n runs from its own install (not npx) so scripts/n8n-runtime/package.json
 # "overrides" can pin around broken upstream dependency releases. The install
 # lives OUTSIDE the repo: the repo is symlinked into n8n's custom folder, and
-# n8n's hot reload reads everything under it — an n8n install inside the repo
-# made it run out of memory.
+# n8n's hot reload reads everything under it, so an n8n install inside the repo
+# would be reloaded too and run out of memory.
 N8N_VERSION="${N8N_VERSION:-latest}"
 N8N_DIR="${N8N_RUNTIME_DIR:-$USER_FOLDER/runtime/$PKG_NAME}"
-# Reuse the n8n install made under the earlier, unscoped package name.
-if [ ! -d "$N8N_DIR" ] && [ -d "$USER_FOLDER/runtime/$OLD_NAME" ] && [ "$OLD_NAME" != "$PKG_NAME" ]; then
-	mkdir -p "$(dirname "$N8N_DIR")"
-	mv "$USER_FOLDER/runtime/$OLD_NAME" "$N8N_DIR"
-fi
 SPEC="$REPO_DIR/scripts/n8n-runtime/package.json"
 # Written only after npm install exits cleanly: an interrupted install leaves
 # n8n/package.json behind with other packages half-extracted.
 MARKER="$N8N_DIR/node_modules/.dev-tunnel-installed"
 WANT="$N8N_VERSION $(shasum "$SPEC" | cut -d' ' -f1)"
-
-# Clean up the old in-repo install from earlier versions of this script.
-if [ -d "$REPO_DIR/.n8n-dev" ]; then
-	echo "Removing old in-repo n8n install (.n8n-dev) ..."
-	rm -rf "$REPO_DIR/.n8n-dev"
-fi
 
 if [ "${N8N_REINSTALL:-}" = "1" ] || [ "$(cat "$MARKER" 2>/dev/null || true)" != "$WANT" ]; then
 	echo "Installing n8n@$N8N_VERSION into $N8N_DIR (clean) ..."

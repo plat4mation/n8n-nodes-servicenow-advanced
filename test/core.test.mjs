@@ -265,7 +265,7 @@ test('requests carry a link to the n8n run unless switched off', async () => {
 	assert.equal(off.state.body.context, undefined);
 });
 
-test('related record pickers: list gives sys_id, By Number gives number, old saved strings still work', async () => {
+test('related record pickers: list gives sys_id, By Number gives number, a plain value is detected', async () => {
 	const sysId = '57ecf3ee83589b107b167755eeaad3d4';
 	const cases = [
 		[{ __rl: true, mode: 'list', value: sysId }, {}, { table: 'incident', sys_id: sysId }],
@@ -275,7 +275,7 @@ test('related record pickers: list gives sys_id, By Number gives number, old sav
 			{ table: 'incident', number: 'INC0012345' },
 		],
 		['INC0012345', {}, { table: 'incident', number: 'INC0012345' }],
-		[sysId, { options: { relatedLookup: 'sysId' } }, { table: 'incident', sys_id: sysId }],
+		[sysId, {}, { table: 'incident', sys_id: sysId }],
 	];
 	for (const [value, saved, expected] of cases) {
 		const { ctx, state } = executeContext(
@@ -954,6 +954,85 @@ test('search knowledge falls back to the Table API when the knowledge API is mis
 	assert.equal(out[0].text, 'Annual leave');
 	assert.equal(out[0].link, 'https://sn.test/kb_view.do?sysparm_article=KB0010001');
 	assert.match(decodeURIComponent(calls[1].url), /workflow_state=published.*123TEXTQUERY321leave/);
+});
+
+test('get decision: open while ServiceNow answers 204, then the decision with stable keys', async () => {
+	const id = 'a3f9c1e84b2d47f0a91c5e6d2b7f8340';
+	const params = { resource: 'humanReview', operation: 'getDecision', correlationId: id };
+	const open = actionContext(params, { 'GET /api/x_pl4_hitl/v1/decision/': '' });
+	assert.deepEqual((await run(open.ctx))[0][0].json, {
+		correlation_id: id,
+		outcome: 'open',
+		approved: null,
+		answers: null,
+		comments: null,
+		resolved_by: null,
+		resolved_at: null,
+		related_record: null,
+	});
+
+	const resolved = actionContext(params, {
+		'GET /api/x_pl4_hitl/v1/decision/': {
+			result: {
+				envelope_version: '1',
+				message_type: 'hitl_decision',
+				correlation_id: id,
+				outcome: 'resolved',
+				data: null,
+				resolved_by: 'jane.doe@example.com',
+				resolved_at: '2026-11-06T10:15:00Z',
+				comments: 'Fixed the vendor mapping',
+				related_record: { table: 'sc_req_item', sys_id: 'b'.repeat(32), display_value: 'RITM0012345' },
+			},
+		},
+	});
+	const out = (await run(resolved.ctx))[0][0].json;
+	assert.equal(out.outcome, 'resolved');
+	assert.equal(out.approved, null);
+	assert.equal(out.comments, 'Fixed the vendor mapping');
+
+	const answered = actionContext(params, {
+		'GET /api/x_pl4_hitl/v1/decision/': { result: { correlation_id: id, outcome: 'answered', data: { gl: '6100' } } },
+	});
+	assert.deepEqual((await run(answered.ctx))[0][0].json.answers, { gl: '6100' });
+});
+
+test('cancel request and add work note call the HITL API with the right bodies', async () => {
+	const id = 'a3f9c1e84b2d47f0a91c5e6d2b7f8340';
+	const cancel = actionContext(
+		{ resource: 'humanReview', operation: 'cancelRequest', correlationId: id.toUpperCase(), cancelReason: 'No longer needed' },
+		{
+			'POST /api/x_pl4_hitl/v1/request/': {
+				result: { correlation_id: id, decision_state: 'cancelled', review_number: 'HITL0001023', already_cancelled: false },
+			},
+		},
+	);
+	assert.equal((await run(cancel.ctx))[0][0].json.decision_state, 'cancelled');
+	assert.match(cancel.calls[0].url, new RegExp(`/request/${id}/cancel$`));
+	assert.deepEqual(cancel.calls[0].body, { reason: 'No longer needed' });
+
+	const note = actionContext(
+		{ resource: 'humanReview', operation: 'addWorkNote', correlationId: id, workNote: 'Retry at 14:00' },
+		{ 'POST /api/x_pl4_hitl/v1/review/': { result: { correlation_id: id, review_number: 'HITL0001023' } } },
+	);
+	assert.equal((await run(note.ctx))[0][0].json.review_number, 'HITL0001023');
+	assert.deepEqual(note.calls[0].body, { work_notes: 'Retry at 14:00' });
+
+	const closed = actionContext(
+		{ resource: 'humanReview', operation: 'addWorkNote', correlationId: id, workNote: 'Too late' },
+		{
+			'POST /api/x_pl4_hitl/v1/review/': () => {
+				throw Object.assign(new Error('Conflict'), {
+					httpCode: '409',
+					error: { result: { error: { code: 'review_closed', message: 'Request has no open review', details: [] } } },
+				});
+			},
+		},
+	);
+	await assert.rejects(run(closed.ctx), /Could not add the work note \(HTTP 409\)/);
+
+	const bad = actionContext({ resource: 'humanReview', operation: 'getDecision', correlationId: 'INC001' }, {});
+	await assert.rejects(run(bad.ctx), /32-character id/);
 });
 
 test('aggregation fields: numbers for sum, numbers and dates for max, never choice fields', async () => {

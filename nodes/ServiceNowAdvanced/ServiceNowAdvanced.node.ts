@@ -10,7 +10,9 @@ import {
 	type IWebhookResponseData,
 } from 'n8n-workflow';
 import {
+	executeFollowUp,
 	executeHitl,
+	FOLLOW_UP_OPERATIONS,
 	hitlWebhook,
 	hitlWebhooks,
 	keyValueRows,
@@ -194,7 +196,6 @@ export class ServiceNowAdvanced implements INodeType {
 					{ name: 'Record', value: 'record' },
 					{ name: 'Service Catalog', value: 'catalog' },
 				],
-				// Workflows saved before resources existed have none; their operations are all Human Review.
 				default: 'humanReview',
 			},
 			{
@@ -205,10 +206,29 @@ export class ServiceNowAdvanced implements INodeType {
 				displayOptions: { show: { resource: ['humanReview'] } },
 				options: [
 					{
+						name: 'Add Work Note',
+						value: 'addWorkNote',
+						action: 'Add a work note to a request',
+						description: 'Add a note for the reviewers to the open review of a request',
+					},
+					{
 						name: 'Ask Question',
 						value: 'ask',
 						action: 'Ask a question',
 						description: 'Ask a group to answer questions',
+					},
+					{
+						name: 'Cancel Request',
+						value: 'cancelRequest',
+						action: 'Cancel a request',
+						description: 'Withdraw an open request',
+					},
+					{
+						name: 'Get Decision',
+						value: 'getDecision',
+						action: 'Get the decision on a request',
+						description:
+							'Read the outcome of a request: open, approved, rejected, answered, declined, resolved, abandoned, expired or cancelled',
 					},
 					{
 						name: 'Report Error',
@@ -319,6 +339,37 @@ export class ServiceNowAdvanced implements INodeType {
 					},
 				],
 				default: 'searchKnowledge',
+			},
+			{
+				displayName: 'Correlation ID',
+				name: 'correlationId',
+				type: 'string',
+				required: true,
+				default: '',
+				placeholder: 'e.g. a3f9c1e84b2d47f0a91c5e6d2b7f8340',
+				description: 'The correlation_id returned when the request was created',
+				displayOptions: { show: { operation: FOLLOW_UP_OPERATIONS } },
+			},
+			{
+				displayName: 'Reason',
+				name: 'cancelReason',
+				type: 'string',
+				typeOptions: { rows: 2 },
+				default: '',
+				description:
+					"Why the request is withdrawn (at most 1000 characters). Stored as the review's closing comment.",
+				displayOptions: { show: { operation: ['cancelRequest'] } },
+			},
+			{
+				displayName: 'Work Note',
+				name: 'workNote',
+				type: 'string',
+				typeOptions: { rows: 4 },
+				required: true,
+				default: '',
+				description:
+					'Note for the reviewers (at most 4000 characters). Work notes are never sent back with the decision.',
+				displayOptions: { show: { operation: ['addWorkNote'] } },
 			},
 			{
 				displayName: 'Subject',
@@ -611,6 +662,7 @@ export class ServiceNowAdvanced implements INodeType {
 		if (operation === 'waitForRecord') return await executeWaitForRecord(this);
 		if (RECORD_OPERATIONS.includes(operation)) return await executeRecordAction(this, operation);
 		if (CATALOG_OPERATIONS.includes(operation)) return await executeCatalogAction(this, operation);
+		if (FOLLOW_UP_OPERATIONS.includes(operation)) return await executeFollowUp(this, operation);
 		const reviewType = REVIEW_TYPE_BY_OPERATION[operation];
 
 		return await executeHitl(this, reviewType, (i): IDataObject => {
