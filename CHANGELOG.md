@@ -13,4 +13,7 @@ Initial release.
   - Usable as an AI agent tool, with an approval gate for other tools (Human review).
   - Pickers for assignment group, related record table and record; files can be attached to the related record; each request links back to the n8n run.
 - Condition builder with operators per field type and a list of choice values.
+- **Record actions**: Search Records, Create or Update (match on fields, skips unchanged), Compare Record (JSON and Markdown diff), Bulk Create or Update (Batch API), Aggregate Records, Get Record With Context (optionally with the attachments as binary data), Evaluate Condition (True / False outputs).
+- **Order Catalog Item** and **Search Knowledge**.
+- **Wait for Record**: pause a workflow until a record on a watch table matches a condition, with Matched and Timed Out outputs.
 - OAuth2 and Basic Auth credentials. The Basic Auth test checks the API role, and a missing role is named in errors.

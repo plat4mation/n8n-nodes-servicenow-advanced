@@ -293,7 +293,7 @@ function externalRefFor(ctx: IExecuteFunctions, itemIndex: number): string {
  * The editor does not save parameters left at their default, and sendAndWait
  * is our default, so check the saved value exactly like n8n does.
  */
-function resumeUrlFor(ctx: IExecuteFunctions): string {
+export function resumeUrlFor(ctx: IExecuteFunctions): string {
 	if (ctx.getNode().parameters.operation === 'sendAndWait') return ctx.getSignedResumeUrl();
 	const resumeUrl = ctx.evaluateExpression('{{ $execution.resumeUrl }}', 0) as string;
 	const [base, query] = resumeUrl.split('?');

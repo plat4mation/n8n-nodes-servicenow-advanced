@@ -23,11 +23,14 @@ export const authenticationProperty: INodeProperties = {
 	default: 'oAuth2',
 };
 
+/** Per-request time limit, so a ServiceNow that stops responding can't hang a step forever. */
+const REQUEST_TIMEOUT_MS = 120_000;
+
 /** Base paths of the x_pl4_n8n and x_pl4_hitl Scripted REST APIs. */
 export const INTERFACE_API = '/api/x_pl4_n8n/v1';
 export const HITL_API = '/api/x_pl4_hitl/v1';
 
-type ServiceNowContext =
+export type ServiceNowContext =
 	| IHookFunctions
 	| IExecuteFunctions
 	| ILoadOptionsFunctions
@@ -66,6 +69,7 @@ export async function serviceNowApiRequest(
 		url,
 		body,
 		json: true,
+		timeout: REQUEST_TIMEOUT_MS,
 	})) as IDataObject;
 }
 
@@ -87,9 +91,28 @@ export async function serviceNowUploadAttachment(
 		headers: { 'Content-Type': mimeType || 'application/octet-stream', Accept: 'application/json' },
 		body: data,
 		json: false,
+		timeout: REQUEST_TIMEOUT_MS,
 	})) as string | IDataObject;
 	const parsed = typeof response === 'string' ? (JSON.parse(response) as IDataObject) : response;
 	return (parsed.result as IDataObject) ?? {};
+}
+
+/** Download an attachment's file content with the standard Attachment API. */
+export async function serviceNowDownloadAttachment(
+	this: IExecuteFunctions,
+	attachmentSysId: string,
+): Promise<Buffer> {
+	const { credentialName, credentials } = await serviceNowCredentials.call(this);
+	const instanceUrl = (credentials.instanceUrl as string).replace(/\/+$/, '');
+	const data = (await this.helpers.httpRequestWithAuthentication.call(this, credentialName, {
+		method: 'GET',
+		url: `${instanceUrl}/api/now/attachment/${encodeURIComponent(attachmentSysId)}/file`,
+		headers: { Accept: '*/*' },
+		encoding: 'arraybuffer',
+		json: false,
+		timeout: REQUEST_TIMEOUT_MS,
+	})) as ArrayBuffer | Buffer;
+	return Buffer.isBuffer(data) ? data : Buffer.from(data);
 }
 
 /**

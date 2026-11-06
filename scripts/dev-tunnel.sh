@@ -120,6 +120,11 @@ export N8N_UNVERIFIED_PACKAGES_ENABLED=true
 export N8N_RUNNERS_TASK_TIMEOUT=300
 export N8N_COMPRESSION_NODE_MAX_DECOMPRESSED_SIZE_BYTES=2147483648
 export N8N_COMPRESSION_NODE_MAX_ZIP_ENTRIES=5000
+# Keep the editor, MCP server and its OAuth on a fixed local URL: without this
+# n8n uses WEBHOOK_URL as its base URL, so an MCP client set up for localhost
+# breaks every time the quick-tunnel URL changes. Webhooks and resume URLs
+# still use WEBHOOK_URL.
+export N8N_EDITOR_BASE_URL="${N8N_EDITOR_BASE_URL:-http://$HOST:$PORT}"
 
 if [ -n "${WEBHOOK_URL:-}" ]; then
 	echo "n8n webhook base: $WEBHOOK_URL"

@@ -6,6 +6,8 @@ import {
 	type INodeProperties,
 	type INodeType,
 	type INodeTypeDescription,
+	type IWebhookFunctions,
+	type IWebhookResponseData,
 } from 'n8n-workflow';
 import {
 	executeHitl,
@@ -16,10 +18,43 @@ import {
 	textParameter,
 } from '../shared/hitl';
 import { authenticationProperty } from '../shared/transport';
-import { searchAllTables, searchAssignmentGroups, searchRelatedRecords } from '../shared/tableMeta';
+import {
+	getAggregateFields,
+	getFieldChoices,
+	getFieldOperators,
+	getTableFields,
+	getWatchTableFields,
+	searchAllTables,
+	searchAssignmentGroups,
+	searchRelatedRecords,
+	searchWatchTables,
+} from '../shared/tableMeta';
+import { executeWaitForRecord, waitForRecordWebhook } from '../shared/waitForRecord';
+import { watchFields } from '../shared/watchFields';
+import {
+	catalogProperties,
+	executeCatalogAction,
+	getCatalogItemVariables,
+	searchCatalogItems,
+} from './catalog';
+import { executeRecordAction, recordProperties } from './records';
 import { questionFields, questionsFor } from './questions';
 
 const WAITING_OPERATIONS = ['sendAndWait', 'ask'];
+/** Operations that create a HITL request (everything except Wait for Record). */
+const REQUEST_OPERATIONS = ['sendAndWait', 'ask', 'reportError'];
+const requestOnly = { show: { operation: REQUEST_OPERATIONS } };
+const waitForRecordOnly = { operation: ['waitForRecord'] };
+const RECORD_OPERATIONS = [
+	'upsert',
+	'diff',
+	'search',
+	'bulkWrite',
+	'aggregate',
+	'getRecordContext',
+	'evaluateCondition',
+];
+const CATALOG_OPERATIONS = ['orderCatalogItem', 'searchKnowledge'];
 
 /**
  * A waiting Approval / Ask step gets one output per outcome plus a catch-all;
@@ -28,9 +63,16 @@ const WAITING_OPERATIONS = ['sendAndWait', 'ask'];
  * `waitForCompletion` means true. Keep in sync with OUTCOME_OUTPUTS in hitl.ts.
  */
 const outcomeOutputsExpression = `={{ ((p) => {
-	const operation = p.operation ?? 'sendAndWait';
+	const resource = p.resource ?? 'humanReview';
+	const operation = p.operation ?? { humanReview: 'sendAndWait', record: 'search' }[resource];
 	const wait = p.waitForCompletion ?? true;
-	if (operation === 'reportError' || !wait) return ['${NodeConnectionTypes.Main}'];
+if (operation === 'waitForRecord') {
+return ['Matched', 'Timed Out'].map((displayName) => ({ type: '${NodeConnectionTypes.Main}', displayName }));
+}
+if (operation === 'evaluateCondition') {
+return ['True', 'False'].map((displayName) => ({ type: '${NodeConnectionTypes.Main}', displayName }));
+}
+if (!['sendAndWait', 'ask'].includes(operation) || !wait) return ['${NodeConnectionTypes.Main}'];
 	const names = operation === 'ask'
 		? ['Answered', 'Declined', 'Expired / Other']
 		: ['Approved', 'Rejected', 'Expired / Other'];
@@ -142,10 +184,25 @@ export class ServiceNowAdvanced implements INodeType {
 		properties: [
 			authenticationProperty,
 			{
+				displayName: 'Resource',
+				name: 'resource',
+				type: 'options',
+				noDataExpression: true,
+				options: [
+					{ name: 'Human Review', value: 'humanReview' },
+					{ name: 'Knowledge', value: 'knowledge' },
+					{ name: 'Record', value: 'record' },
+					{ name: 'Service Catalog', value: 'catalog' },
+				],
+				// Workflows saved before resources existed have none; their operations are all Human Review.
+				default: 'humanReview',
+			},
+			{
 				displayName: 'Operation',
 				name: 'operation',
 				type: 'options',
 				noDataExpression: true,
+				displayOptions: { show: { resource: ['humanReview'] } },
 				options: [
 					{
 						name: 'Ask Question',
@@ -169,6 +226,101 @@ export class ServiceNowAdvanced implements INodeType {
 				default: 'sendAndWait',
 			},
 			{
+				displayName: 'Operation',
+				name: 'operation',
+				type: 'options',
+				noDataExpression: true,
+				displayOptions: { show: { resource: ['record'] } },
+				options: [
+					{
+						name: 'Aggregate Records',
+						value: 'aggregate',
+						action: 'Count or aggregate records',
+						description:
+							'Count, sum, average, minimum or maximum, optionally grouped (Aggregate API)',
+					},
+					{
+						name: 'Bulk Create or Update',
+						value: 'bulkWrite',
+						action: 'Create or update records in bulk',
+						description: 'Send all input items in a few Batch API calls instead of one call each',
+					},
+					{
+						name: 'Compare Record',
+						value: 'diff',
+						action: 'Compare a record with proposed values',
+						description: 'Show what would change, as JSON and as a Markdown table',
+					},
+					{
+						name: 'Create or Update',
+						value: 'upsert',
+						action: 'Create or update a record',
+						description:
+							'Create a new record, or update the current one if it already exists (upsert)',
+					},
+					{
+						name: 'Evaluate Condition',
+						value: 'evaluateCondition',
+						action: 'Check whether a record matches a condition',
+						description:
+							'Route the item to True or False depending on whether the record matches an encoded query',
+					},
+					{
+						name: 'Get Record With Context',
+						value: 'getRecordContext',
+						action: 'Get a record with its context',
+						description: 'A record plus its comments and work notes, attachments and related lists',
+					},
+					{
+						name: 'Search Records',
+						value: 'search',
+						action: 'Search records',
+						description: 'Find records with the condition builder or an encoded query',
+					},
+					{
+						name: 'Wait for Record',
+						value: 'waitForRecord',
+						action: 'Wait for a record to change',
+						description:
+							'Pause the workflow until a record is inserted or updated and matches a condition',
+					},
+				],
+				default: 'search',
+			},
+			{
+				displayName: 'Operation',
+				name: 'operation',
+				type: 'options',
+				noDataExpression: true,
+				displayOptions: { show: { resource: ['catalog'] } },
+				options: [
+					{
+						name: 'Order Catalog Item',
+						value: 'orderCatalogItem',
+						action: 'Order a catalog item',
+						description:
+							"Order through the Service Catalog, so the item's own flows and approvals run",
+					},
+				],
+				default: 'orderCatalogItem',
+			},
+			{
+				displayName: 'Operation',
+				name: 'operation',
+				type: 'options',
+				noDataExpression: true,
+				displayOptions: { show: { resource: ['knowledge'] } },
+				options: [
+					{
+						name: 'Search Knowledge',
+						value: 'searchKnowledge',
+						action: 'Search knowledge articles',
+						description: 'Find published knowledge articles, optionally with their text',
+					},
+				],
+				default: 'searchKnowledge',
+			},
+			{
 				displayName: 'Subject',
 				name: 'subject',
 				type: 'string',
@@ -177,6 +329,50 @@ export class ServiceNowAdvanced implements INodeType {
 				placeholder: 'e.g. Approve purchase order PO-2026-1188 (EUR 48,000)',
 				description:
 					'Short description of the review task. The first 160 characters become its short description.',
+				displayOptions: requestOnly,
+			},
+
+			// Record actions, catalog and knowledge
+			...recordProperties,
+			...catalogProperties,
+
+			// Wait for Record
+			...watchFields(waitForRecordOnly, 'Wait For', 'update'),
+			{
+				displayName: 'Only This Record (Sys ID)',
+				name: 'recordSysId',
+				type: 'string',
+				default: '',
+				placeholder: 'e.g. 57ecf3ee83589b107b167755eeaad3d4',
+				description:
+					'Wait for one specific record, e.g. the one that started the workflow. Leave empty to wait for any matching record.',
+				displayOptions: { show: waitForRecordOnly },
+			},
+			{
+				displayName: 'Options',
+				name: 'waitOptions',
+				type: 'collection',
+				placeholder: 'Add Option',
+				default: {},
+				displayOptions: { show: waitForRecordOnly },
+				options: [
+					{
+						displayName: 'Continue If Already Matching',
+						name: 'checkExisting',
+						type: 'boolean',
+						default: true,
+						description:
+							'Whether to check for a record that already matches and continue immediately. Skipped for conditions with change operators (Changes, Changes From, Changes To).',
+					},
+					{
+						displayName: 'Stop Waiting After (Hours)',
+						name: 'maxWaitHours',
+						type: 'number',
+						typeOptions: { minValue: 1 },
+						default: 24,
+						description: 'After this, the workflow continues on the Timed Out output',
+					},
+				],
 			},
 
 			// Ask Question
@@ -275,6 +471,7 @@ export class ServiceNowAdvanced implements INodeType {
 				],
 				default: 'none',
 				description: 'Key/value data shown to the reviewer. Display only.',
+				displayOptions: requestOnly,
 			},
 			{
 				displayName: 'Context Fields',
@@ -319,6 +516,7 @@ export class ServiceNowAdvanced implements INodeType {
 				type: 'collection',
 				placeholder: 'Add Option',
 				default: {},
+				displayOptions: requestOnly,
 				options: [
 					{
 						displayName: 'Assignment Group',
@@ -384,13 +582,35 @@ export class ServiceNowAdvanced implements INodeType {
 	};
 
 	methods = {
-		listSearch: { searchAllTables, searchAssignmentGroups, searchRelatedRecords },
+		listSearch: {
+			searchAllTables,
+			searchAssignmentGroups,
+			searchRelatedRecords,
+			searchWatchTables,
+			searchCatalogItems,
+		},
+		loadOptions: {
+			getAggregateFields,
+			getWatchTableFields,
+			getTableFields,
+			getFieldOperators,
+			getFieldChoices,
+			getCatalogItemVariables,
+		},
 	};
 
-	webhook = hitlWebhook;
+	async webhook(this: IWebhookFunctions): Promise<IWebhookResponseData> {
+		if (this.getNodeParameter('operation', 'sendAndWait') === 'waitForRecord') {
+			return await waitForRecordWebhook.call(this);
+		}
+		return await hitlWebhook.call(this);
+	}
 
 	async execute(this: IExecuteFunctions): Promise<INodeExecutionData[][]> {
 		const operation = this.getNodeParameter('operation', 0) as string;
+		if (operation === 'waitForRecord') return await executeWaitForRecord(this);
+		if (RECORD_OPERATIONS.includes(operation)) return await executeRecordAction(this, operation);
+		if (CATALOG_OPERATIONS.includes(operation)) return await executeCatalogAction(this, operation);
 		const reviewType = REVIEW_TYPE_BY_OPERATION[operation];
 
 		return await executeHitl(this, reviewType, (i): IDataObject => {

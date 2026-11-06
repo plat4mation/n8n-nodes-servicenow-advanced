@@ -36,7 +36,7 @@ The package has two nodes that appear together as **ServiceNow Advanced** in the
 
 - **Table**: pick from the list or enter a name. The list shows `task`, `sys_user`, `x_pl4_hrlifecycle4_lifecycle_user` and every table that extends them (read from `sys_db_object`).
 - **Trigger On**: Insert, Update or Insert or Update.
-- **Condition**: build it with the **condition builder**, or paste an **encoded query**. In the builder, each row has a field (including inherited fields), operators that fit the field's type, a **Choice** list with the stored values for choice and true/false fields, and a free **Value** for everything else. Rows combine with AND / OR / new query. Operators include the change operators *Changes*, *Changes From* and *Changes To* (VALCHANGES, CHANGESFROM, CHANGESTO). No conditions triggers on every insert/update.
+- **Condition**: build it with the **condition builder**, or paste an **encoded query**. In the builder, each row has a field (including inherited fields), operators that fit the field's type, and a **Value** list with the stored values of choice and true/false fields; pick *Custom Value…* to type any other value. Rows combine with AND / OR / new query. Operators include the change operators *Changes*, *Changes From* and *Changes To* (VALCHANGES, CHANGESFROM, CHANGESTO). No conditions triggers on every insert/update.
 - The table list needs read access to `sys_db_object`. Fields come from ServiceNow's UI metadata API (`/api/now/ui/meta/<table>`, needs read access to the table) with `sys_dictionary` as fallback. Without access, enter the table by name and use the encoded query.
 - Output: `{ table, sys_id, operation, record }`, plus `_servicenow` with the envelope.
 - Registration, testing and deactivation work as for Flow Designer: one interface per **Interface Identifier**.
@@ -91,9 +91,37 @@ While waiting, the node has one output per outcome, so you can branch without an
 
 Without waiting, every input item creates one request and the output holds its `correlation_id`.
 
-### Planned
+### ServiceNow Advanced: records, catalog and knowledge
 
-- **Wait for record**: pause a workflow until records in a table match an encoded query.
+Besides human review, the node has these actions on standard ServiceNow APIs (all usable as AI agent tools):
+
+| Resource | Action | What it does |
+|---|---|---|
+| Record | **Search Records** | Find records with the condition builder or an encoded query; choose fields, order, display values, return all or a limit. |
+| Record | **Create or Update** | Match on one or more fields: no match creates, a match updates. Several matches fail (or update all / the first). Unchanged records are skipped, so no business rules or audit entries run for nothing. Output `action`: created / updated / unchanged, plus the changes. Fields ServiceNow didn't save (no write access) are listed in `not_saved` with a warning. |
+| Record | **Compare Record** | Compare proposed values with a record (by sys_id or match fields). Returns `changes` as JSON and a `markdown` table (*Field \| Current \| Proposed*) with labels and display values, e.g. for an approval's context. |
+| Record | **Bulk Create or Update** | All input items in a few Batch API calls. One result per item with `success`; without *Continue On Fail* any failure stops the node. |
+| Record | **Aggregate Records** | Count, sum, average, minimum, maximum, grouped by fields (Aggregate API). One item per group. |
+| Record | **Get Record With Context** | A record plus its latest comments and work notes, attachment list and related lists. **Download Attachments** adds the files as binary data (`attachment_0`, `attachment_1`, …) for other nodes. Parts the user can't read become `warnings`. |
+| Record | **Evaluate Condition** | Check whether a record (by sys_id) matches a condition (builder or encoded query). The input item goes to the **True** or **False** output unchanged, like an If node. ServiceNow evaluates the query itself, so every operator works except the change operators. A record that doesn't exist or can't be read is an error, not False. As an AI tool it returns `matches`. |
+| Record | **Wait for Record** | See below. |
+| Service Catalog | **Order Catalog Item** | Order an item with its variables (picked from the item), so its flows and approvals run. Returns the REQ and its RITMs. |
+| Knowledge | **Search Knowledge** | Search knowledge articles, optionally with the article text. Uses the Knowledge Management REST API; without that plugin it searches published articles through the Table API (`kb_knowledge`, keyword search, `source: "table_api"`). |
+
+When the ServiceNow user can't read `sys_journal_field`, Get Record With Context reads the comments and work notes from the record itself; `created_by` is then the user's name and `created_on` is in that user's date format.
+
+"Values Are Display Values" lets Create or Update and Bulk accept display values (e.g. a group name) for ServiceNow to resolve.
+
+### ServiceNow Advanced: Wait for Record
+
+**Wait for Record** (resource *Record*) pauses the workflow until a record on a watch table is inserted or updated and matches a condition (same table picker and condition builder as the trigger).
+
+- **Only This Record (Sys ID)**: wait for one record, e.g. the one that started the workflow; leave empty for any matching record.
+- **Continue If Already Matching** (on by default): if a record already matches, the workflow continues right away. Skipped for change operators (*Changes*, *Changes From*, *Changes To*), which only exist during a save.
+- **Stop Waiting After (Hours)** (default 24).
+- Outputs: **Matched** with `{ matched, table, sys_id, operation, record }`, or **Timed Out**.
+
+While waiting, a temporary `watch_trigger` interface named `n8n_wait_…` exists in ServiceNow. It is removed when the record matches; after a time-out it is removed by the next Wait for Record registration. Not available as an AI agent tool, because a tool call can't pause.
 
 ## Credentials
 

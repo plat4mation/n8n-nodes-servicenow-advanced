@@ -7,7 +7,7 @@ import {
 	type INodePropertyOptions,
 	type JsonObject,
 } from 'n8n-workflow';
-import { serviceNowApiRequest, serviceNowCredentials } from './transport';
+import { serviceNowApiRequest, serviceNowCredentials, type ServiceNowContext } from './transport';
 
 /**
  * Lookups through standard ServiceNow APIs for the node pickers: tables
@@ -25,8 +25,8 @@ interface TableRow {
 	parent: string;
 }
 
-async function tableQuery(
-	ctx: ILoadOptionsFunctions,
+export async function tableQuery(
+	ctx: ServiceNowContext,
 	table: string,
 	qs: IDataObject,
 ): Promise<IDataObject[]> {
@@ -49,31 +49,83 @@ async function tableQuery(
 }
 
 /**
- * sys_db_object per credential, kept for a few minutes: the table picker calls
- * allTables on every keystroke, and the full list can be thousands of rows.
+ * Small per-process cache for picker data that rarely changes (table list,
+ * fields per table). Fresh for an hour; after that the old value is still
+ * returned at once while one background request refreshes it, for up to a
+ * day. Concurrent callers share one in-flight request. In `dev:tunnel` the
+ * cache is cleared whenever n8n reloads the rebuilt package.
  */
-const TABLE_CACHE_MS = 5 * 60 * 1000;
-const tableCache = new Map<string, { at: number; tables: TableRow[] }>();
+const FRESH_MS = 60 * 60 * 1000;
+const STALE_MS = 24 * 60 * 60 * 1000;
+
+interface CacheEntry<T> {
+	at: number;
+	value?: T;
+	pending?: Promise<T>;
+}
+
+async function cached<T>(
+	cache: Map<string, CacheEntry<T>>,
+	key: string,
+	load: () => Promise<T>,
+): Promise<T> {
+	const entry = cache.get(key);
+	const age = entry ? Date.now() - entry.at : Infinity;
+	const refresh = () => {
+		const pending = load()
+			.then((value) => {
+				cache.set(key, { at: Date.now(), value });
+				return value;
+			})
+			.catch((error: unknown) => {
+				// Keep serving the old value; drop only the failed refresh.
+				const current = cache.get(key);
+				if (current?.pending === pending) cache.set(key, { at: current.at, value: current.value });
+				throw error;
+			});
+		cache.set(key, { at: entry?.at ?? 0, value: entry?.value, pending });
+		return pending;
+	};
+
+	if (entry?.value !== undefined && age < FRESH_MS) return entry.value;
+	if (entry?.value !== undefined && age < STALE_MS) {
+		if (!entry.pending) refresh().catch(() => undefined);
+		return entry.value;
+	}
+	return await (entry?.pending ?? refresh());
+}
+
+const tableCache = new Map<string, CacheEntry<TableRow[]>>();
+const TABLE_PAGE_SIZE = 5000;
 
 /** All tables with their parent table, from sys_db_object. */
-async function allTables(ctx: ILoadOptionsFunctions): Promise<TableRow[]> {
+async function allTables(ctx: ServiceNowContext): Promise<TableRow[]> {
 	const { credentials } = await serviceNowCredentials.call(ctx);
-	const key = String(credentials.instanceUrl ?? '');
-	const cached = tableCache.get(key);
-	if (cached && Date.now() - cached.at < TABLE_CACHE_MS) return cached.tables;
-
-	const rows = await tableQuery(ctx, 'sys_db_object', {
-		sysparm_fields: 'name,label,super_class.name',
-		sysparm_exclude_reference_link: 'true',
-		sysparm_limit: 20000,
+	return await cached(tableCache, String(credentials.instanceUrl ?? ''), async () => {
+		// Plain columns only: dot-walking to super_class.name makes ServiceNow join
+		// every row, and skipping the row count saves another query. Paged, because
+		// the Table API caps one response (10,000 rows by default) and instances with
+		// many plugins have more tables than that.
+		const rows: IDataObject[] = [];
+		for (let offset = 0; ; offset += TABLE_PAGE_SIZE) {
+			const page = await tableQuery(ctx, 'sys_db_object', {
+				sysparm_query: 'ORDERBYsys_id',
+				sysparm_fields: 'sys_id,name,label,super_class',
+				sysparm_exclude_reference_link: 'true',
+				sysparm_no_count: 'true',
+				sysparm_limit: TABLE_PAGE_SIZE,
+				sysparm_offset: offset,
+			});
+			rows.push(...page);
+			if (page.length < TABLE_PAGE_SIZE || offset > 200_000) break;
+		}
+		const nameById = new Map(rows.map((r) => [String(r.sys_id), String(r.name ?? '')]));
+		return rows.map((r) => ({
+			name: String(r.name ?? ''),
+			label: String(r.label ?? r.name ?? ''),
+			parent: nameById.get(String(r.super_class ?? '')) ?? '',
+		}));
 	});
-	const tables = rows.map((r) => ({
-		name: String(r.name ?? ''),
-		label: String(r.label ?? r.name ?? ''),
-		parent: String(r['super_class.name'] ?? ''),
-	}));
-	tableCache.set(key, { at: Date.now(), tables });
-	return tables;
 }
 
 /** The roots plus every table that extends one of them, at any depth. */
@@ -99,6 +151,40 @@ function descendantsOf(tables: TableRow[], roots: string[]): TableRow[] {
 	return result;
 }
 
+/**
+ * Some tables are hidden from sys_db_object for users without the right roles
+ * (HR Service Delivery hides its sn_hr_* tables), yet the UI metadata API still
+ * describes them. When the typed text is a full table name that isn't in the
+ * list, check that one table directly and offer it.
+ */
+async function withHiddenTable(
+	ctx: ILoadOptionsFunctions,
+	needle: string,
+	results: INodeListSearchResult['results'],
+): Promise<INodeListSearchResult> {
+	if (!/^[a-z][a-z0-9_]{3,79}$/.test(needle) || results.some((r) => r.value === needle)) {
+		return { results };
+	}
+	try {
+		if ((await fieldsFromMeta(ctx, needle)).length) {
+			return {
+				results: [
+					{
+						name: `${needle} (not in table list)`,
+						value: needle,
+						description:
+							'Hidden from the table list for this user; it may also lack read access to its records',
+					},
+					...results,
+				],
+			};
+		}
+	} catch {
+		// Not a table, or not readable at all.
+	}
+	return { results };
+}
+
 /** listSearch: watchable tables (the roots and their extensions), filtered by name or label. */
 export async function searchWatchTables(
 	this: ILoadOptionsFunctions,
@@ -113,7 +199,7 @@ export async function searchWatchTables(
 		)
 		.sort((a, b) => a.label.localeCompare(b.label))
 		.map((t) => ({ name: `${t.label} (${t.name})`, value: t.name }));
-	return { results };
+	return await withHiddenTable(this, needle, results);
 }
 
 /** The table and all its parent tables, nearest first. */
@@ -128,7 +214,7 @@ function ancestry(tables: TableRow[], table: string): string[] {
 	return chain;
 }
 
-interface FieldOption {
+export interface FieldOption {
 	element: string;
 	label: string;
 	type: string;
@@ -143,7 +229,7 @@ interface FieldOption {
  * includes inherited fields and only needs read access to the table itself,
  * unlike sys_dictionary (often admin-only, and then silently empty).
  */
-async function fieldsFromMeta(ctx: ILoadOptionsFunctions, table: string): Promise<FieldOption[]> {
+async function fieldsFromMeta(ctx: ServiceNowContext, table: string): Promise<FieldOption[]> {
 	const response = await serviceNowApiRequest.call(
 		ctx,
 		'GET',
@@ -170,10 +256,7 @@ async function fieldsFromMeta(ctx: ILoadOptionsFunctions, table: string): Promis
 }
 
 /** Fallback: sys_dictionary for the table's whole ancestry; a child's definition wins. */
-async function fieldsFromDictionary(
-	ctx: ILoadOptionsFunctions,
-	table: string,
-): Promise<FieldOption[]> {
+async function fieldsFromDictionary(ctx: ServiceNowContext, table: string): Promise<FieldOption[]> {
 	const chain = ancestry(await allTables(ctx), table);
 	const rows = await tableQuery(ctx, 'sys_dictionary', {
 		sysparm_query: `nameIN${chain.join(',')}^elementISNOTEMPTY^internal_type!=collection`,
@@ -198,15 +281,16 @@ async function fieldsFromDictionary(
 	}));
 }
 
-const fieldCache = new Map<string, { at: number; fields: FieldOption[] }>();
+const fieldCache = new Map<string, CacheEntry<FieldOption[]>>();
 
 /** Fields of a table including inherited ones, cached like the table list. */
-async function fieldsFor(ctx: ILoadOptionsFunctions, table: string): Promise<FieldOption[]> {
+export async function fieldsFor(ctx: ServiceNowContext, table: string): Promise<FieldOption[]> {
 	const { credentials } = await serviceNowCredentials.call(ctx);
 	const key = `${String(credentials.instanceUrl ?? '')}|${table}`;
-	const cached = fieldCache.get(key);
-	if (cached && Date.now() - cached.at < TABLE_CACHE_MS) return cached.fields;
+	return await cached(fieldCache, key, async () => await loadFields(ctx, table));
+}
 
+async function loadFields(ctx: ServiceNowContext, table: string): Promise<FieldOption[]> {
 	let fields: FieldOption[] = [];
 	let metaError: string | undefined;
 	try {
@@ -226,12 +310,23 @@ async function fieldsFor(ctx: ILoadOptionsFunctions, table: string): Promise<Fie
 			description: `The ServiceNow user needs read access to the table (UI metadata API) or to sys_dictionary.${metaError ? ` Metadata API: ${metaError}` : ''} You can still type a field name as an expression or use an encoded query.`,
 		});
 	}
-	fieldCache.set(key, { at: Date.now(), fields });
 	return fields;
 }
 
+/**
+ * A parameter's current value in a picker, resource locators unwrapped.
+ * getCurrentNodeParameter's extractValue throws "Could not find property" for a
+ * parameter the current operation doesn't show, and our locators have no
+ * extract regex, so the raw value is read instead.
+ */
+export function currentValue(ctx: ILoadOptionsFunctions, name: string): string {
+	const raw = ctx.getCurrentNodeParameter(name) as unknown;
+	const value = raw && typeof raw === 'object' && 'value' in raw ? raw.value : raw;
+	return value === undefined || value === null ? '' : String(value).trim();
+}
+
 function watchTableOf(ctx: ILoadOptionsFunctions): string {
-	return String(ctx.getCurrentNodeParameter('watchTable', { extractValue: true }) ?? '').trim();
+	return currentValue(ctx, 'table') || currentValue(ctx, 'watchTable');
 }
 
 /** The condition row's field definition, or undefined for a typed or dot-walked field. */
@@ -240,6 +335,11 @@ async function rowField(ctx: ILoadOptionsFunctions): Promise<FieldOption | undef
 	const element = String(ctx.getCurrentNodeParameter('&field') ?? '').trim();
 	if (!table || !element) return undefined;
 	return (await fieldsFor(ctx, table)).find((f) => f.element === element);
+}
+
+/** loadOptions: field names of the selected table (multi-select lists and match fields). */
+export async function getTableFields(this: ILoadOptionsFunctions): Promise<INodePropertyOptions[]> {
+	return await getWatchTableFields.call(this);
 }
 
 /** loadOptions: fields of the selected table, including inherited ones. */
@@ -403,6 +503,31 @@ export function operatorsForField(
 	).map((o) => o.value);
 }
 
+/**
+ * loadOptions: fields that fit the aggregation row's function. Sum and average
+ * need numbers; minimum and maximum also work on dates.
+ */
+export async function getAggregateFields(
+	this: ILoadOptionsFunctions,
+): Promise<INodePropertyOptions[]> {
+	const table = watchTableOf(this);
+	if (!table) throw new NodeOperationError(this.getNode(), 'Select a table first');
+	const fn = String(this.getCurrentNodeParameter('&function') ?? 'sum');
+	const allowed = ['min', 'max'].includes(fn) ? [...NUMERIC_TYPES, ...DATE_TYPES] : NUMERIC_TYPES;
+	const fields = (await fieldsFor(this, table)).filter(
+		(f) => !f.isChoice && allowed.includes(f.type),
+	);
+	if (!fields.length) {
+		throw new NodeOperationError(
+			this.getNode(),
+			`No ${['min', 'max'].includes(fn) ? 'number or date' : 'number'} fields on ${table}`,
+		);
+	}
+	return fields
+		.map((f) => ({ name: `${f.label} (${f.element})`, value: f.element, description: f.type }))
+		.sort((a, b) => a.name.localeCompare(b.name));
+}
+
 /** loadOptions: operators that fit the condition row's field. */
 export async function getFieldOperators(
 	this: ILoadOptionsFunctions,
@@ -445,7 +570,7 @@ async function choicesFromSysChoice(
 export async function getFieldChoices(
 	this: ILoadOptionsFunctions,
 ): Promise<INodePropertyOptions[]> {
-	const typeBelow = { name: '— Type the Value Below —', value: '' };
+	const typeBelow = { name: 'Custom Value…', value: '' };
 	let field: FieldOption | undefined;
 	try {
 		field = await rowField(this);
@@ -510,7 +635,7 @@ export async function searchAllTables(
 		.sort((a, b) => a.label.localeCompare(b.label))
 		.slice(0, 200)
 		.map((t) => ({ name: `${t.label} (${t.name})`, value: t.name }));
-	return { results };
+	return await withHiddenTable(this, needle, results);
 }
 
 /** listSearch: active assignment groups by name. */
@@ -541,11 +666,7 @@ export async function searchRelatedRecords(
 	this: ILoadOptionsFunctions,
 	filter?: string,
 ): Promise<INodeListSearchResult> {
-	const table = String(
-		this.getCurrentNodeParameter('relatedTable', { extractValue: true }) ??
-			this.getCurrentNodeParameter('options.relatedTable', { extractValue: true }) ??
-			'',
-	).trim();
+	const table = currentValue(this, 'relatedTable') || currentValue(this, 'options.relatedTable');
 	if (!table) {
 		throw new NodeOperationError(this.getNode(), 'Select the related record table first');
 	}
