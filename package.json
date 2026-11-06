@@ -1,0 +1,65 @@
+{
+    "name": "@plat4mation/n8n-nodes-servicenow-advanced",
+    "version": "0.1.0",
+    "description": "n8n community nodes for ServiceNow: Flow Designer and record-change triggers, and human-in-the-loop approvals, questions and error tasks",
+    "license": "MIT",
+    "homepage": "https://github.com/plat4mation/n8n-nodes-servicenow-advanced#readme",
+    "keywords": [
+        "n8n-community-node-package",
+        "n8n",
+        "servicenow",
+        "human-in-the-loop",
+        "approval"
+    ],
+    "author": {
+        "name": "Luc Raeskin",
+        "email": "luc.raeskin@plat4mation.com"
+    },
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/plat4mation/n8n-nodes-servicenow-advanced.git"
+    },
+    "bugs": {
+        "url": "https://github.com/plat4mation/n8n-nodes-servicenow-advanced/issues"
+    },
+    "scripts": {
+        "build": "n8n-node build",
+        "build:watch": "tsc --watch",
+        "dev": "n8n-node dev",
+        "lint": "n8n-node lint",
+        "lint:fix": "n8n-node lint --fix",
+        "release": "n8n-node release",
+        "prepublishOnly": "n8n-node prerelease",
+        "dev:tunnel": "bash scripts/dev-tunnel.sh",
+        "test": "node --test test/*.test.mjs"
+    },
+    "files": [
+        "dist"
+    ],
+    "publishConfig": {
+        "access": "public",
+        "provenance": true
+    },
+    "n8n": {
+        "n8nNodesApiVersion": 1,
+        "strict": true,
+        "credentials": [
+            "dist/credentials/ServiceNowAdvancedOAuth2Api.credentials.js",
+            "dist/credentials/ServiceNowAdvancedBasicApi.credentials.js"
+        ],
+        "nodes": [
+            "dist/nodes/ServiceNowAdvancedTrigger/ServiceNowAdvancedTrigger.node.js",
+            "dist/nodes/ServiceNowAdvanced/ServiceNowAdvanced.node.js"
+        ]
+    },
+    "devDependencies": {
+        "@n8n/node-cli": "*",
+        "eslint": "9.32.0",
+        "prettier": "3.6.2",
+        "release-it": "^21.1.0",
+        "typescript": "5.9.2"
+    },
+    "peerDependencies": {
+        "n8n-workflow": "*"
+    }
+}

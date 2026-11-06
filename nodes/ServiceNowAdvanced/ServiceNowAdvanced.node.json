@@ -1,0 +1,30 @@
+{
+	"node": "@plat4mation/n8n-nodes-servicenow-advanced",
+	"nodeVersion": "1.0",
+	"codexVersion": "1.0",
+	"categories": ["Productivity"],
+	"alias": [
+		"ServiceNow",
+		"HITL",
+		"Human in the Loop",
+		"Human Review",
+		"Approval",
+		"Ask",
+		"Question",
+		"Error",
+		"Flow Designer",
+		"Webhook"
+	],
+	"resources": {
+		"credentialDocumentation": [
+			{
+				"url": "https://www.servicenow.com/docs/bundle/xanadu-platform-security/page/administer/security/concept/c_OAuthApplications.html"
+			}
+		],
+		"primaryDocumentation": [
+			{
+				"url": "https://www.servicenow.com/docs/bundle/xanadu-api-reference/page/integrate/custom-web-services/concept/c_CustomWebServices.html"
+			}
+		]
+	}
+}

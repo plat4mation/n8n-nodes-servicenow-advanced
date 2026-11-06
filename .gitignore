@@ -1,0 +1,17 @@
+node_modules/
+dist/
+.DS_Store
+*.tsbuildinfo
+.env
+
+# Agent skills are installed per-machine, not vendored into the repo
+.agents/
+.claude/
+
+# Internal notes and agent tooling, kept local
+Roadmap.md
+CLAUDE.md
+AGENTS.md
+skills-lock.json
+docs/superpowers/
+.superpowers/
