@@ -121,22 +121,10 @@ function parseExpectedPayload(ctx: IHookFunctions): IDataObject | null {
 }
 
 /**
- * n8n serves the same webhook under `/webhook-test/` while listening in the
- * editor and under `/webhook/` once the workflow is active.
- */
-function isTestPath(path: string): boolean {
-	return /\/webhook-test\//.test(path);
-}
-
-function productionPath(path: string): string {
-	return path.replace(/\/webhook-test\//, '/webhook/');
-}
-
-/**
  * What to register for the webhook n8n is currently setting up. Test and
- * production use the same identifier: Flow Designer references the interface
- * record, so "Listen for test event" repoints that record to the test URL
- * instead of creating a separate one.
+ * production use the same identifier: "Listen for test event" points the
+ * interface at the test URL and deletes it when the test ends, like activation
+ * and deactivation do for the live URL.
  */
 async function registrationFor(ctx: IHookFunctions): Promise<InterfaceRegistration> {
 	const webhookUrl = ctx.getNodeWebhookUrl('default') as string;
@@ -290,7 +278,7 @@ export class ServiceNowAdvancedTrigger implements INodeType {
 			},
 			{
 				displayName:
-					'On activation this node registers an interface in ServiceNow that calls this workflow. "Listen for test event" temporarily points the same interface at the test URL, so live calls go to the editor while you test; it is pointed back when the test ends and the workflow is active.',
+					'Activating the workflow registers an interface in ServiceNow that calls it; deactivating deletes it. "Listen for test event" registers the same interface for the test URL and deletes it when the test ends.',
 				name: 'notice',
 				type: 'notice',
 				default: '',
@@ -312,24 +300,6 @@ export class ServiceNowAdvancedTrigger implements INodeType {
 				default: '',
 				placeholder: 'e.g. Invoice approval',
 				description: 'Display name of the interface in ServiceNow. Defaults to the identifier.',
-			},
-			{
-				displayName: 'On Deactivation',
-				name: 'onDeactivate',
-				type: 'options',
-				options: [
-					{
-						name: 'Keep Interface',
-						value: 'keep',
-						description: 'Leave the record in ServiceNow so flows keep referencing it',
-					},
-					{
-						name: 'Delete Interface',
-						value: 'delete',
-						description: 'Remove the record from ServiceNow when the workflow is deactivated',
-					},
-				],
-				default: 'keep',
 			},
 			...watchFields({ event: ['watchTable'] }, 'Trigger On', 'insert_or_update'),
 			{
@@ -429,21 +399,6 @@ export class ServiceNowAdvancedTrigger implements INodeType {
 					const registration = await registrationFor(this);
 					identifier = registration.identifier;
 
-					if (isTestPath(registration.path)) {
-						// Test listening ended: point the record back at the live webhook,
-						// but only if the workflow is active. Otherwise there is nothing live
-						// to point at and the record stays as it is.
-						if (this.getWorkflow().active) {
-							await upsertInterface(this, {
-								...registration,
-								path: productionPath(registration.path),
-							});
-						}
-						return true;
-					}
-
-					if (this.getNodeParameter('onDeactivate', 'keep') !== 'delete') return true;
-
 					const record = await getInterface(this, identifier);
 					// Leave it alone if it's gone or another workflow has taken it over.
 					if (record && record.path === registration.path) {
@@ -454,9 +409,9 @@ export class ServiceNowAdvancedTrigger implements INodeType {
 						);
 					}
 				} catch (error) {
-					// Log and continue so deactivation still succeeds.
+					// Log and continue so deactivation and ending a test still succeed.
 					this.logger.warn(
-						`ServiceNow Advanced Trigger: could not update or delete interface ${identifier}: ${serviceNowErrorDetail(error) ?? (error as Error).message}`,
+						`ServiceNow Advanced Trigger: could not delete interface ${identifier}: ${serviceNowErrorDetail(error) ?? (error as Error).message}`,
 					);
 				}
 				return true;

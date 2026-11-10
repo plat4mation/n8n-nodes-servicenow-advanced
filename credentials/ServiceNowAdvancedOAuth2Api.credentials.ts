@@ -1,4 +1,4 @@
-import type { Icon, ICredentialType, INodeProperties } from 'n8n-workflow';
+import type { Icon, ICredentialTestRequest, ICredentialType, INodeProperties } from 'n8n-workflow';
 
 export class ServiceNowAdvancedOAuth2Api implements ICredentialType {
 	name = 'serviceNowAdvancedOAuth2Api';
@@ -83,4 +83,32 @@ export class ServiceNowAdvancedOAuth2Api implements ICredentialType {
 			default: 'header',
 		},
 	];
+
+	// Same check as the Basic Auth credential: the interface list needs the
+	// x_pl4_n8n.api role the trigger needs. Runs with the OAuth2 access token,
+	// so connect the credential first.
+	test: ICredentialTestRequest = {
+		request: {
+			baseURL: '={{$credentials.instanceUrl.replace(/\\/+$/, "")}}',
+			url: '/api/x_pl4_n8n/v1/interface',
+			qs: { active: 'true' },
+		},
+		rules: [
+			{
+				type: 'responseCode',
+				properties: {
+					value: 403,
+					message:
+						'Logged in, but the user lacks the x_pl4_n8n.api role needed for the ServiceNow Advanced Trigger',
+				},
+			},
+			{
+				type: 'responseCode',
+				properties: {
+					value: 404,
+					message: 'The x_pl4_n8n app is not installed on this instance (interface API not found)',
+				},
+			},
+		],
+	};
 }

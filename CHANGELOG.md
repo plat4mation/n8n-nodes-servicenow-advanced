@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.0 (2026-11-10)
+
+- **ServiceNow Advanced Trigger** registers and deletes its interface like any other trigger: activating the workflow or starting "Listen for test event" registers it; deactivating or ending the test deletes it. Test and live share one identifier.
+  - **Breaking:** the *On Deactivation* option is removed; deactivation always deletes the interface. Ending a test no longer points the interface back at the live workflow, so test while the workflow is inactive.
+- The OAuth2 credential has a **Test** button, like Basic Auth: it checks the `x_pl4_n8n.api` role and that the app is installed.
+
 ## 0.1.1 (2026-11-06)
 
 - No functional changes.

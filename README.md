@@ -59,11 +59,10 @@ Every action of ServiceNow Advanced except Wait for Record can also be used as a
 
 ## ServiceNow Advanced Trigger
 
-Both events register an **interface** in ServiceNow when the workflow is activated. The interface tells ServiceNow where to call n8n.
+Both events register an **interface** in ServiceNow when the workflow is activated and delete it when the workflow is deactivated. The interface tells ServiceNow where to call n8n.
 
-- **Interface Identifier**: lowercase snake_case, at most 40 characters. One identifier is one interface record; test and live runs share it.
-- **Listen for test event** temporarily points the interface at the editor's test URL, so calls from ServiceNow, including live ones, go to the editor while you test. When the test ends, it points back at the live workflow if that is active.
-- **On Deactivation**: *Keep Interface* (default) leaves the record in ServiceNow, so flows keep referencing it; *Delete Interface* removes it.
+- **Interface Identifier**: lowercase snake_case, at most 100 characters. One identifier is one interface record; test and live runs share it.
+- **Listen for test event** registers the interface for the editor's test URL and deletes it when the test ends. Test while the workflow is inactive: testing an active workflow repoints its live interface, and ending the test deletes it until you reactivate.
 - The output contains the data ServiceNow sends; ServiceNow's envelope (`correlation_token`, `callback_url`, …) is under `_servicenow`.
 
 ### On Flow Designer Call
@@ -247,6 +246,7 @@ Each node has an **Authentication** option: **OAuth2** (default) or **Basic Auth
 1. In ServiceNow, create an OAuth application endpoint for external clients (**System OAuth > Application Registry**).
 2. In n8n, create a **ServiceNow Advanced OAuth2 API** credential and fill in the instance URL (for example `https://dev12345.service-now.com`), client ID and client secret.
 3. For the authorization code grant, copy the OAuth redirect URL from n8n into the application's **Redirect URL** in ServiceNow.
+4. Connect the credential, then use **Test** to check it against the `x_pl4_n8n` interface API, as for Basic Auth.
 
 An existing OAuth application used by n8n's built-in ServiceNow node can be reused.
 
