@@ -1,6 +1,6 @@
 {
     "name": "@plat4mation/n8n-nodes-servicenow-advanced",
-    "version": "0.1.1",
+    "version": "0.2.0",
     "description": "n8n community nodes for ServiceNow: Flow Designer and record-change triggers, human-in-the-loop approvals, questions and error tasks, wait for record, upsert, compare, bulk and context record actions, catalog orders and knowledge search",
     "license": "MIT",
     "homepage": "https://github.com/plat4mation/n8n-nodes-servicenow-advanced#readme",
